@@ -1,0 +1,354 @@
+CREATE DATABASE TiendaCamisetas;
+GO
+USE TiendaCamisetas;
+GO
+
+CREATE TABLE Clientes (
+    ClienteID INT IDENTITY(1,1) PRIMARY KEY,
+    Nombre VARCHAR(100) NOT NULL,
+    Apellido VARCHAR(100) NOT NULL,
+    Email VARCHAR(150) UNIQUE NOT NULL,
+    Telefono VARCHAR(20),
+    Direccion VARCHAR(255),
+    FechaRegistro DATETIME DEFAULT GETDATE()
+);
+
+CREATE TABLE Camisetas (
+    CamisetaID INT IDENTITY(1,1) PRIMARY KEY,
+    Equipo VARCHAR(100) NOT NULL,
+    Temporada VARCHAR(50) NOT NULL,
+    TipoCamiseta VARCHAR(50) NOT NULL,
+    PrecioBase DECIMAL(10,2) NOT NULL,
+    ImagenUrl VARCHAR(255) NULL
+);
+
+CREATE TABLE Bodega (
+    BodegaID INT IDENTITY(1,1) PRIMARY KEY,
+    CamisetaID INT NOT NULL,
+    Talla VARCHAR(10) CHECK (Talla IN ('S', 'M', 'L', 'XL', 'XXL')),
+    Stock INT NOT NULL CHECK (Stock >= 0),
+    FOREIGN KEY (CamisetaID) REFERENCES Camisetas(CamisetaID)
+);
+
+CREATE TABLE ServiciosPersonalizacion (
+    ServicioID INT IDENTITY(1,1) PRIMARY KEY,
+    NombreServicio VARCHAR(100) NOT NULL,
+    Calidad VARCHAR(20) NOT NULL CHECK (Calidad IN ('Premium', 'Calidad Precio')),
+    PrecioAdicional DECIMAL(10,2) NOT NULL
+);
+
+CREATE TABLE Carritos (
+    CarritoID INT IDENTITY(1,1) PRIMARY KEY,
+    ClienteID INT NOT NULL UNIQUE,
+    FechaCreacion DATETIME DEFAULT GETDATE(),
+    FechaActualizacion DATETIME DEFAULT GETDATE(),
+    FOREIGN KEY (ClienteID) REFERENCES Clientes(ClienteID)
+);
+
+CREATE TABLE DetallesCarrito (
+    DetalleCarritoID INT IDENTITY(1,1) PRIMARY KEY,
+    CarritoID INT NOT NULL,
+    BodegaID INT NOT NULL,
+    ServicioID INT NULL,
+    Cantidad INT NOT NULL DEFAULT 1 CHECK (Cantidad > 0),
+    FOREIGN KEY (CarritoID) REFERENCES Carritos(CarritoID) ON DELETE CASCADE,
+    FOREIGN KEY (BodegaID) REFERENCES Bodega(BodegaID),
+    FOREIGN KEY (ServicioID) REFERENCES ServiciosPersonalizacion(ServicioID)
+);
+
+CREATE TABLE Pedidos (
+    PedidoID INT IDENTITY(1,1) PRIMARY KEY,
+    ClienteID INT NOT NULL,
+    FechaPedido DATETIME DEFAULT GETDATE(),
+    Total DECIMAL(10,2) NOT NULL,
+    Estado VARCHAR(50) DEFAULT 'Pendiente',
+    FOREIGN KEY (ClienteID) REFERENCES Clientes(ClienteID)
+);
+
+CREATE TABLE DetallesPedido (
+    DetalleID INT IDENTITY(1,1) PRIMARY KEY,
+    PedidoID INT NOT NULL,
+    BodegaID INT NOT NULL,
+    ServicioID INT NULL,
+    Cantidad INT NOT NULL CHECK (Cantidad > 0),
+    PrecioUnitario DECIMAL(10,2) NOT NULL,
+    Subtotal DECIMAL(10,2) NOT NULL,
+    FOREIGN KEY (PedidoID) REFERENCES Pedidos(PedidoID),
+    FOREIGN KEY (BodegaID) REFERENCES Bodega(BodegaID),
+    FOREIGN KEY (ServicioID) REFERENCES ServiciosPersonalizacion(ServicioID)
+);
+
+CREATE TABLE Pagos (
+    PagoID INT IDENTITY(1,1) PRIMARY KEY,
+    PedidoID INT NOT NULL,
+    Monto DECIMAL(10,2) NOT NULL,
+    MetodoPago VARCHAR(50) DEFAULT 'Tarjeta',
+    UltimosDigitosTarjeta VARCHAR(4) NOT NULL,
+    TransaccionToken VARCHAR(255) NOT NULL,
+    EstadoPago VARCHAR(50) NOT NULL,
+    FechaPago DATETIME DEFAULT GETDATE(),
+    FOREIGN KEY (PedidoID) REFERENCES Pedidos(PedidoID)
+);
+GO
+
+CREATE TABLE Audit_Clientes (
+    AuditID INT IDENTITY(1,1) PRIMARY KEY,
+    ClienteID INT NOT NULL,
+    Accion VARCHAR(10) NOT NULL,
+    NombreAntiguo VARCHAR(100),
+    NombreNuevo VARCHAR(100),
+    EmailAntiguo VARCHAR(150),
+    EmailNuevo VARCHAR(150),
+    DireccionAntigua VARCHAR(255),
+    DireccionNueva VARCHAR(255),
+    UsuarioSQL VARCHAR(100) DEFAULT SYSTEM_USER,
+    FechaHora DATETIME DEFAULT GETDATE()
+);
+
+CREATE TABLE Audit_Bodega (
+    AuditID INT IDENTITY(1,1) PRIMARY KEY,
+    BodegaID INT NOT NULL,
+    CamisetaID INT NOT NULL,
+    Talla VARCHAR(10) NOT NULL,
+    StockAnterior INT,
+    StockNuevo INT,
+    Diferencia INT,
+    Accion VARCHAR(10) NOT NULL,
+    UsuarioSQL VARCHAR(100) DEFAULT SYSTEM_USER,
+    FechaHora DATETIME DEFAULT GETDATE()
+);
+
+CREATE TABLE Audit_Pagos (
+    AuditID INT IDENTITY(1,1) PRIMARY KEY,
+    PagoID INT NOT NULL,
+    PedidoID INT NOT NULL,
+    Monto DECIMAL(10,2) NOT NULL,
+    EstadoAnterior VARCHAR(50),
+    EstadoNuevo VARCHAR(50),
+    TransaccionToken VARCHAR(255),
+    UsuarioSQL VARCHAR(100) DEFAULT SYSTEM_USER,
+    FechaHora DATETIME DEFAULT GETDATE()
+);
+GO
+
+CREATE TRIGGER trg_Audit_Clientes
+ON Clientes
+AFTER UPDATE, DELETE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF EXISTS (SELECT * FROM inserted) AND EXISTS (SELECT * FROM deleted)
+    BEGIN
+        INSERT INTO Audit_Clientes (ClienteID, Accion, NombreAntiguo, NombreNuevo, EmailAntiguo, EmailNuevo, DireccionAntigua, DireccionNueva)
+        SELECT 
+            d.ClienteID, 'UPDATE',
+            d.Nombre, i.Nombre,
+            d.Email, i.Email,
+            d.Direccion, i.Direccion
+        FROM deleted d
+        INNER JOIN inserted i ON d.ClienteID = i.ClienteID;
+    END
+
+    IF NOT EXISTS (SELECT * FROM inserted) AND EXISTS (SELECT * FROM deleted)
+    BEGIN
+        INSERT INTO Audit_Clientes (ClienteID, Accion, NombreAntiguo, EmailAntiguo, DireccionAntigua)
+        SELECT 
+            d.ClienteID, 'DELETE',
+            d.Nombre, d.Email, d.Direccion
+        FROM deleted d;
+    END
+END;
+GO
+
+CREATE TRIGGER trg_Audit_Bodega
+ON Bodega
+AFTER UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    INSERT INTO Audit_Bodega (BodegaID, CamisetaID, Talla, StockAnterior, StockNuevo, Diferencia, Accion)
+    SELECT 
+        i.BodegaID,
+        i.CamisetaID,
+        i.Talla,
+        d.Stock AS StockAnterior,
+        i.Stock AS StockNuevo,
+        (i.Stock - d.Stock) AS Diferencia,
+        'UPDATE'
+    FROM inserted i
+    INNER JOIN deleted d ON i.BodegaID = d.BodegaID
+    WHERE i.Stock <> d.Stock;
+END;
+GO
+
+CREATE TRIGGER trg_Audit_Pagos
+ON Pagos
+AFTER INSERT, UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF EXISTS (SELECT * FROM inserted) AND NOT EXISTS (SELECT * FROM deleted)
+    BEGIN
+        INSERT INTO Audit_Pagos (PagoID, PedidoID, Monto, EstadoAnterior, EstadoNuevo, TransaccionToken)
+        SELECT PagoID, PedidoID, Monto, 'N/A', EstadoPago, TransaccionToken FROM inserted;
+    END
+
+    IF EXISTS (SELECT * FROM inserted) AND EXISTS (SELECT * FROM deleted)
+    BEGIN
+        INSERT INTO Audit_Pagos (PagoID, PedidoID, Monto, EstadoAnterior, EstadoNuevo, TransaccionToken)
+        SELECT i.PagoID, i.PedidoID, i.Monto, d.EstadoPago, i.EstadoPago, i.TransaccionToken
+        FROM inserted i
+        INNER JOIN deleted d ON i.PagoID = d.PagoID
+        WHERE i.EstadoPago <> d.EstadoPago;
+    END
+END;
+GO
+
+CREATE PROCEDURE sp_ConfirmarCompra
+    @ClienteID INT,
+    @Ultimos4Digitos VARCHAR(4),
+    @TokenTransaccion VARCHAR(255)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRANSACTION;
+
+    BEGIN TRY
+        DECLARE @CarritoID INT;
+        DECLARE @PedidoID INT;
+        DECLARE @Total DECIMAL(10,2);
+
+        SELECT @CarritoID = CarritoID FROM Carritos WHERE ClienteID = @ClienteID;
+
+        IF @CarritoID IS NULL
+            THROW 50001, 'El cliente no posee un carrito de compras activo.', 1;
+
+        SELECT @Total = SUM((c.PrecioBase + ISNULL(s.PrecioAdicional, 0)) * dc.Cantidad)
+        FROM DetallesCarrito dc
+        INNER JOIN Bodega b ON dc.BodegaID = b.BodegaID
+        INNER JOIN Camisetas c ON b.CamisetaID = c.CamisetaID
+        LEFT JOIN ServiciosPersonalizacion s ON dc.ServicioID = s.ServicioID
+        WHERE dc.CarritoID = @CarritoID;
+
+        INSERT INTO Pedidos (ClienteID, Total, Estado)
+        VALUES (@ClienteID, @Total, 'Pagado');
+
+        SET @PedidoID = SCOPE_IDENTITY();
+
+        INSERT INTO DetallesPedido (PedidoID, BodegaID, ServicioID, Cantidad, PrecioUnitario, Subtotal)
+        SELECT 
+            @PedidoID,
+            dc.BodegaID,
+            dc.ServicioID,
+            dc.Cantidad,
+            (c.PrecioBase + ISNULL(s.PrecioAdicional, 0)) AS PrecioUnitario,
+            ((c.PrecioBase + ISNULL(s.PrecioAdicional, 0)) * dc.Cantidad) AS Subtotal
+        FROM DetallesCarrito dc
+        INNER JOIN Bodega b ON dc.BodegaID = b.BodegaID
+        INNER JOIN Camisetas c ON b.CamisetaID = c.CamisetaID
+        LEFT JOIN ServiciosPersonalizacion s ON dc.ServicioID = s.ServicioID
+        WHERE dc.CarritoID = @CarritoID;
+
+        INSERT INTO Pagos (PedidoID, Monto, UltimosDigitosTarjeta, TransaccionToken, EstadoPago)
+        VALUES (@PedidoID, @Total, @Ultimos4Digitos, @TokenTransaccion, 'Aprobado');
+
+        UPDATE b
+        SET b.Stock = b.Stock - dc.Cantidad
+        FROM Bodega b
+        INNER JOIN DetallesCarrito dc ON b.BodegaID = dc.BodegaID
+        WHERE dc.CarritoID = @CarritoID;
+
+        DELETE FROM DetallesCarrito WHERE CarritoID = @CarritoID;
+
+        COMMIT TRANSACTION;
+        SELECT @PedidoID AS PedidoID, 'Compra procesada y confirmada con éxito' AS Mensaje;
+
+    END TRY
+    BEGIN CATCH
+        ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END;
+GO
+
+CREATE VIEW vw_CatalogoDisponibilidad AS
+SELECT 
+    c.CamisetaID,
+    c.Equipo,
+    c.Temporada,
+    c.TipoCamiseta,
+    c.PrecioBase,
+    c.ImagenUrl,
+    b.BodegaID,
+    b.Talla,
+    b.Stock,
+    CASE 
+        WHEN b.Stock > 5 THEN 'Disponible'
+        WHEN b.Stock BETWEEN 1 AND 5 THEN 'Agotándose'
+        ELSE 'Agotado'
+    END AS EstadoStock
+FROM Camisetas c
+INNER JOIN Bodega b ON c.CamisetaID = b.CamisetaID;
+GO
+
+CREATE VIEW vw_CarritoDetallado AS
+SELECT 
+    car.ClienteID,
+    car.CarritoID,
+    dc.DetalleCarritoID,
+    c.Equipo,
+    c.Temporada,
+    c.TipoCamiseta,
+    b.Talla,
+    dc.Cantidad,
+    c.PrecioBase,
+    ISNULL(sp.NombreServicio, 'Sin Personalización') AS ServicioPersonalizacion,
+    ISNULL(sp.Calidad, 'N/A') AS CalidadPersonalizacion,
+    ISNULL(sp.PrecioAdicional, 0.00) AS PrecioServicio,
+    ((c.PrecioBase + ISNULL(sp.PrecioAdicional, 0.00)) * dc.Cantidad) AS SubtotalItem
+FROM Carritos car
+INNER JOIN DetallesCarrito dc ON car.CarritoID = dc.CarritoID
+INNER JOIN Bodega b ON dc.BodegaID = b.BodegaID
+INNER JOIN Camisetas c ON b.CamisetaID = c.CamisetaID
+LEFT JOIN ServiciosPersonalizacion sp ON dc.ServicioID = sp.ServicioID;
+GO
+
+CREATE VIEW vw_HistorialPedidosCliente AS
+SELECT 
+    p.PedidoID,
+    cl.ClienteID,
+    CONCAT(cl.Nombre, ' ', cl.Apellido) AS NombreCliente,
+    cl.Email,
+    p.FechaPedido,
+    p.Total,
+    p.Estado AS EstadoPedido,
+    pg.PagoID,
+    pg.MetodoPago,
+    pg.UltimosDigitosTarjeta,
+    pg.EstadoPago,
+    pg.TransaccionToken,
+    COUNT(dp.DetalleID) AS CantidadProductosComprados
+FROM Pedidos p
+INNER JOIN Clientes cl ON p.ClienteID = cl.ClienteID
+INNER JOIN DetallesPedido dp ON p.PedidoID = dp.PedidoID
+LEFT JOIN Pagos pg ON p.PedidoID = pg.PedidoID
+GROUP BY 
+    p.PedidoID, cl.ClienteID, cl.Nombre, cl.Apellido, cl.Email, 
+    p.FechaPedido, p.Total, p.Estado, pg.PagoID, pg.MetodoPago, 
+    pg.UltimosDigitosTarjeta, pg.EstadoPago, pg.TransaccionToken;
+GO
+
+CREATE VIEW vw_VentasPorCalidadServicio AS
+SELECT 
+    ISNULL(sp.Calidad, 'Sin Personalizar') AS CalidadServicio,
+    COUNT(dp.DetalleID) AS TotalUnidadesVendidas,
+    SUM(dp.Subtotal) AS IngresoTotalGenerado
+FROM DetallesPedido dp
+LEFT JOIN ServiciosPersonalizacion sp ON dp.ServicioID = sp.ServicioID
+INNER JOIN Pedidos p ON dp.PedidoID = p.PedidoID
+WHERE p.Estado = 'Pagado'
+GROUP BY sp.Calidad;
+GO
